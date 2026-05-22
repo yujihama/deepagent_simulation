@@ -27,7 +27,7 @@
 現時点の永続化範囲は次の通りです。
 
 - run中のDeepAgent文脈: メモリ上の`AgentSession.history`
-- UI表示と監査用の記録: SQLiteのmessages、applications、run_events、audit_reports
+- UI表示と監査用の記録: SQLiteのmessages、applications、run_events、audit_reports。画面表示は `/api/business-records` 経由で観察テーマごとの業務レコードへ変換します。
 - 今後の拡張候補: LangGraph checkpointerまたは永続backendによるrun再開
 
 ## Tool通信
@@ -115,4 +115,10 @@ Live実行は`OPENAI_API_KEY`と`deepagents`が利用可能な場合に、`gpt-4
 
 ## UI設定
 
-部長承認閾値と分割判定期間の編集UIはMVP画面から外しています。現時点の観察ルールは初期規定・仕様書とバックエンド設定で管理し、ダッシュボード上ではagent、ドキュメント、シナリオ、実行ストリーム、申請一覧、監査結果に絞って表示します。
+部長承認閾値と分割判定期間の編集UIはMVP画面から外しています。現時点の観察ルールは初期規定・仕様書とバックエンド設定で管理し、ダッシュボード上ではagent、ドキュメント、シナリオ、実行ストリーム、業務レコード、監査結果に絞って表示します。
+
+## 観察テーマ
+
+申請承認は `application_approval` という観察テーマとして扱います。UIは申請テーブルを直接読むのではなく、`GET /api/business-records` で取得した業務レコードを表示します。これにより、値引き承認、契約レビュー、経費精算などに題材を変える場合も、agent実行基盤とストリーム表示を維持したまま、記録種別、表示列、初期ドキュメント、tool、監査観点を差し替えやすくします。
+
+詳しい拡張手順は [observation_themes.md](observation_themes.md) を参照してください。

@@ -24,6 +24,29 @@ export type ApprovalSettings = {
   splitKeyFields: string[];
 };
 
+export type ObservationThemeColumn = {
+  key: string;
+  label: string;
+};
+
+export type ObservationTheme = {
+  id: string;
+  name: string;
+  enabled: boolean;
+  recordType: string;
+  recordLabel: string;
+  recordPluralLabel: string;
+  source: string;
+  tableColumns: ObservationThemeColumn[];
+  fieldLabels: Record<string, string>;
+  scenarioCases: ScenarioCase[];
+};
+
+export type ObservationThemeCatalog = {
+  activeThemeId: string;
+  themes: ObservationTheme[];
+};
+
 export type RuntimeStatus = {
   openaiKeyAvailable: boolean;
   deepagentsAvailable: boolean;
@@ -85,6 +108,28 @@ export type Application = {
   status: string;
   erpResponse: string;
   createdAt: string;
+};
+
+export type BusinessRecordField = {
+  key: string;
+  label: string;
+  value: string | number | null;
+};
+
+export type BusinessRecord = {
+  id: string;
+  runId: string;
+  themeId: string;
+  recordType: string;
+  title: string;
+  ownerAgent: string;
+  counterparty: string;
+  status: string;
+  createdAt: string;
+  source: Record<string, unknown>;
+  fieldValues: Record<string, string | number | null>;
+  displayFields: BusinessRecordField[];
+  raw: Record<string, unknown>;
 };
 
 export type AuditReport = {

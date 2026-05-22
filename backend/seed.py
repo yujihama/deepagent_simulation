@@ -4,6 +4,7 @@ import sqlite3
 from typing import Any
 
 from .db import dumps, now_iso
+from .domain_config import ACTIVE_THEME_KEY, DEFAULT_THEME_ID
 from .scenario_config import ensure_scenario_initial_instructions
 
 
@@ -230,6 +231,10 @@ def apply_non_destructive_seed_updates(conn: sqlite3.Connection) -> None:
     )
     ts = now_iso()
     conn.execute("UPDATE agents SET allowed_tools = ?, updated_at = ? WHERE id = 'customer-a'", (dumps(["send_message"]), ts))
+    conn.execute(
+        "INSERT OR IGNORE INTO settings (key, value, updated_at) VALUES (?, ?, ?)",
+        (ACTIVE_THEME_KEY, DEFAULT_THEME_ID, ts),
+    )
     conn.commit()
 
 
@@ -293,6 +298,10 @@ def seed_defaults(conn: sqlite3.Connection, *, reset: bool = False) -> None:
     conn.execute(
         "INSERT INTO settings (key, value, updated_at) VALUES ('approval', ?, ?)",
         (dumps(DEFAULT_SETTINGS), ts),
+    )
+    conn.execute(
+        "INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?)",
+        (ACTIVE_THEME_KEY, DEFAULT_THEME_ID, ts),
     )
     apply_non_destructive_seed_updates(conn)
     ensure_scenario_initial_instructions(conn)

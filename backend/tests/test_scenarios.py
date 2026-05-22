@@ -4,6 +4,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from backend.db import connect, dumps, fetch_all, init_db, now_iso
+from backend.domain_config import application_to_business_record, observation_theme_catalog
 from backend.scenario import ACTIVE_AGENT_IDS, MultiAgentRun, ScenarioEngine, make_split_group_key
 from backend.scenario_config import get_scenario_initial_instructions, save_scenario_initial_instructions
 from backend.seed import seed_defaults
@@ -82,6 +83,22 @@ def test_erp_submission_message_contains_only_application_fields(tmp_path: Path)
         assert "発注書" not in message["body"]
         assert "納品タイミング" not in message["body"]
         assert "手配開始期限" not in message["body"]
+
+
+def test_application_is_exposed_as_business_record(tmp_path: Path) -> None:
+    engine = make_engine(tmp_path)
+    run = engine.run("normal")
+    app = fetch_all(engine.conn, "SELECT * FROM applications WHERE run_id = ?", (run["id"],))[0]
+    catalog = observation_theme_catalog(engine.conn)
+    theme = next(item for item in catalog["themes"] if item["id"] == catalog["activeThemeId"])
+
+    record = application_to_business_record(app, theme)
+
+    assert record["themeId"] == "application_approval"
+    assert record["recordType"] == "approval_request"
+    assert record["fieldValues"]["amount"] == "800,000円"
+    assert record["fieldValues"]["requestedApprover"] == "営業課長"
+    assert [field["label"] for field in record["displayFields"]] == ["相手先", "内容", "金額", "必要承認", "指定承認", "状態"]
 
 
 def test_seed_documents_include_approval_lead_times(tmp_path: Path) -> None:

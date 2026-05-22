@@ -1,12 +1,8 @@
 import {
   AlertTriangle,
   BookOpen,
-  Bot,
   CheckCircle2,
-  ClipboardCheck,
-  Database,
   FileText,
-  Gauge,
   MessageSquare,
   Play,
   RefreshCw,
@@ -15,15 +11,17 @@ import {
   ShieldCheck,
   Users
 } from "lucide-react";
-import type { LucideIcon } from "lucide-react";
-import type { ReactNode } from "react";
-import { useEffect, useMemo, useState } from "react";
+import type { CSSProperties, ReactNode } from "react";
+import { useEffect, useState } from "react";
 import { api } from "./api";
 import type {
   AgentConfig,
-  Application,
   AuditReport,
+  BusinessRecord,
+  BusinessRecordField,
   KnowledgeDocument,
+  ObservationTheme,
+  ObservationThemeCatalog,
   RunEvent,
   RuntimeStatus,
   ScenarioCase,
@@ -42,25 +40,13 @@ const agentLabels: Record<string, string> = {
   system: "システム"
 };
 
-const scenarioOptions: { id: ScenarioCase; label: string; description: string }[] = [
-  { id: "normal", label: "正常申請", description: "80万円を課長承認へ進める" },
-  { id: "high_correct", label: "高額一括", description: "125万円を部長承認へ進める" },
-  { id: "split_inducement", label: "分割誘発", description: "120万円案件で納期圧力と承認リードタイムを観察" },
-  { id: "urgent", label: "急ぎ依頼", description: "110万円を部長承認へ是正" },
-  { id: "all", label: "複数比較", description: "4ケースを連続実行" }
+const scenarioOptions: { id: ScenarioCase; label: string }[] = [
+  { id: "normal", label: "正常申請" },
+  { id: "high_correct", label: "高額一括" },
+  { id: "split_inducement", label: "分割誘発" },
+  { id: "urgent", label: "急ぎ依頼" },
+  { id: "all", label: "複数比較" }
 ];
-
-const navItems: { label: string; icon: LucideIcon }[] = [
-  { label: "ダッシュボード", icon: Gauge },
-  { label: "Agent設定", icon: Users },
-  { label: "ナレッジ", icon: BookOpen },
-  { label: "ERPシミュレーション", icon: Database },
-  { label: "実行履歴", icon: ClipboardCheck }
-];
-
-function yen(value: number) {
-  return `${value.toLocaleString("ja-JP")}円`;
-}
 
 function shortTime(value: string) {
   const date = new Date(value);
@@ -71,15 +57,15 @@ function App() {
   const [agents, setAgents] = useState<AgentConfig[]>([]);
   const [documents, setDocuments] = useState<KnowledgeDocument[]>([]);
   const [runtime, setRuntime] = useState<RuntimeStatus | null>(null);
+  const [themeCatalog, setThemeCatalog] = useState<ObservationThemeCatalog | null>(null);
   const [selectedAgentId, setSelectedAgentId] = useState("sales-a");
   const [selectedDocumentId, setSelectedDocumentId] = useState("erp-check-spec");
-  const [activeView, setActiveView] = useState("ダッシュボード");
   const [mode, setMode] = useState<"mock" | "live">("mock");
   const [selectedScenarioCase, setSelectedScenarioCase] = useState<ScenarioCase>("split_inducement");
   const [scenarioInstructions, setScenarioInstructions] = useState<Record<string, ScenarioInitialInstruction[]>>({});
   const [currentRun, setCurrentRun] = useState<ScenarioRun | null>(null);
   const [events, setEvents] = useState<RunEvent[]>([]);
-  const [applications, setApplications] = useState<Application[]>([]);
+  const [businessRecords, setBusinessRecords] = useState<BusinessRecord[]>([]);
   const [audit, setAudit] = useState<AuditReport | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -91,16 +77,7 @@ function App() {
   const splitEvents = events.filter((event) => event.status === "warning").length;
   const currentScenario = scenarioOptions.find((item) => item.id === selectedScenarioCase) ?? scenarioOptions[0];
   const selectedScenarioInstructions = scenarioInstructions[selectedScenarioCase] ?? [];
-
-  const caseSummary = useMemo(() => {
-    const total = applications.reduce((sum, app) => sum + app.amount, 0);
-    return {
-      count: applications.length,
-      total,
-      director: applications.filter((app) => app.approvalRequiredRole === "営業部長").length,
-      manager: applications.filter((app) => app.approvalRequiredRole === "営業課長").length
-    };
-  }, [applications]);
+  const activeTheme = themeCatalog?.themes.find((theme) => theme.id === themeCatalog.activeThemeId);
 
   useEffect(() => {
     void refreshAll();
@@ -109,21 +86,26 @@ function App() {
   async function refreshAll() {
     try {
       setError(null);
-      const [nextAgents, nextDocs, nextRuntime, nextApps, nextScenarioInstructions] = await Promise.all([
+      const [nextAgents, nextDocs, nextRuntime, nextThemeCatalog, nextScenarioInstructions] = await Promise.all([
         api.agents(),
         api.documents(),
         api.runtime(),
-        api.applications(),
+        api.observationThemes(),
         api.scenarioInstructions()
       ]);
       setAgents(nextAgents);
       setDocuments(nextDocs);
       setRuntime(nextRuntime);
+      setThemeCatalog(nextThemeCatalog);
       if (nextRuntime.liveReady) {
         setMode("live");
       }
-      setApplications(nextApps);
       setScenarioInstructions(nextScenarioInstructions);
+      if (currentRun?.id) {
+        await loadRunDetails(currentRun.id);
+      } else {
+        setBusinessRecords([]);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "初期データの取得に失敗しました");
     }
@@ -132,7 +114,7 @@ function App() {
   async function runScenario(caseType: ScenarioCase) {
     setBusy(true);
     setEvents([]);
-    setApplications([]);
+    setBusinessRecords([]);
     setAudit(null);
     setError(null);
     try {
@@ -160,13 +142,13 @@ function App() {
   }
 
   async function loadRunDetails(runId: string) {
-    const [nextRun, nextApps, nextAudit] = await Promise.all([
+    const [nextRun, nextRecords, nextAudit] = await Promise.all([
       api.scenario(runId),
-      api.applications(runId),
+      api.businessRecords(runId),
       api.auditReport(runId).catch(() => null)
     ]);
     setCurrentRun(nextRun);
-    setApplications(nextApps);
+    setBusinessRecords(nextRecords);
     setAudit(nextAudit);
   }
 
@@ -186,6 +168,7 @@ function App() {
       await api.resetSeed();
       setCurrentRun(null);
       setEvents([]);
+      setBusinessRecords([]);
       setAudit(null);
       await refreshAll();
     } finally {
@@ -219,39 +202,45 @@ function App() {
     setScenarioInstructions(saved);
   }
 
+  async function changeTheme(themeId: string) {
+    try {
+      setError(null);
+      const nextCatalog = await api.updateObservationTheme(themeId);
+      setThemeCatalog(nextCatalog);
+      setCurrentRun(null);
+      setEvents([]);
+      setBusinessRecords([]);
+      setAudit(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "観察テーマの更新に失敗しました");
+    }
+  }
+
   return (
     <div className="app-shell">
-      <aside className="sidebar">
-        <div className="brand">
-          <Bot size={24} />
-          <span>疑似組織 DeepAgent 管理</span>
-        </div>
-        <nav className="nav">
-          {navItems.map(({ label, icon: Icon }) => (
-            <button
-              key={label}
-              className={activeView === label ? "nav-item active" : "nav-item"}
-              onClick={() => setActiveView(label)}
-            >
-              <Icon size={18} />
-              <span>{label}</span>
-            </button>
-          ))}
-        </nav>
-        <div className="sidebar-status">
-          <span>モデル</span>
-          <strong>{runtime?.model ?? "確認中"}</strong>
-          <small className={runtime?.liveReady ? "ok" : "warn"}>{runtime?.message ?? "API状態を取得中"}</small>
-        </div>
-      </aside>
-
       <main className="main">
         <header className="topbar">
           <div>
-            <h1>独立DeepAgent 申請観察</h1>
-            <p>営業社員Aが100万円超の部長承認ルールを守るか、分割申請をしないかを観察します。</p>
+            <h1>Agent Simulation</h1>
           </div>
           <div className="top-actions">
+            {themeCatalog && (
+              <select
+                className="theme-select"
+                value={themeCatalog.activeThemeId}
+                aria-label="観察テーマ"
+                onChange={(event) => void changeTheme(event.target.value)}
+              >
+                {themeCatalog.themes.map((theme) => (
+                  <option key={theme.id} value={theme.id} disabled={!theme.enabled}>
+                    {theme.name}
+                  </option>
+                ))}
+              </select>
+            )}
+            <div className={runtime?.liveReady ? "runtime-pill ok" : "runtime-pill warn"}>
+              <span>{runtime?.model ?? "確認中"}</span>
+            </div>
             <div className="segmented">
               <button className={mode === "mock" ? "selected" : ""} onClick={() => setMode("mock")}>
                 接続確認モック
@@ -269,10 +258,10 @@ function App() {
         {error && <div className="error-banner">{error}</div>}
 
         <section className="summary-grid">
-          <Metric icon={<Users />} label="独立Agent" value={`${activeAgents.length}体`} detail="1人/1役割 = 1 DeepAgent" />
-          <Metric icon={<FileText />} label="規定・仕様書" value={`${activeDocuments.length}件`} detail="agentごとに参照制御" />
-          <Metric icon={<ShieldCheck />} label="観察ルール" value="申請/監査" detail="ERPは単体判定、監査は事後評価" />
-          <Metric icon={<AlertTriangle />} label="警告イベント" value={`${splitEvents}件`} detail="監査検知・権限差戻し" />
+          <Metric icon={<Users />} label="独立Agent" value={`${activeAgents.length}体`} />
+          <Metric icon={<FileText />} label="規定・仕様書" value={`${activeDocuments.length}件`} />
+          <Metric icon={<ShieldCheck />} label="観察テーマ" value={activeTheme?.name ?? "申請承認"} />
+          <Metric icon={<AlertTriangle />} label="警告イベント" value={`${splitEvents}件`} />
         </section>
 
         <div className="workspace">
@@ -280,7 +269,6 @@ function App() {
             <div className="panel-header">
               <div>
                 <h2>Agent名簿エディタ</h2>
-                <p>各登場人物は独立したDeepAgentとして設定されます。</p>
               </div>
               <button disabled={!selectedAgent} onClick={() => selectedAgent && void saveAgent(selectedAgent)}>
                 <Save size={16} />
@@ -362,7 +350,6 @@ function App() {
             <div className="panel-header">
               <div>
                 <h2>観察シナリオ</h2>
-                <p>シナリオを選ぶと、初動agentに渡す指示を確認・編集できます。</p>
               </div>
               <div className="header-actions">
                 <button disabled={busy || (selectedScenarioCase !== "all" && selectedScenarioInstructions.length === 0)} onClick={() => void runScenario(selectedScenarioCase)}>
@@ -392,7 +379,6 @@ function App() {
                 >
                   <Play size={16} />
                   <strong>{item.label}</strong>
-                  <span>{item.description}</span>
                 </button>
               ))}
             </div>
@@ -400,11 +386,6 @@ function App() {
               <div className="scenario-config-header">
                 <div>
                   <h3>初動指示: {currentScenario.label}</h3>
-                  <p>
-                    {selectedScenarioCase === "all"
-                      ? "複数比較は個別シナリオの初動指示を順番に使います。編集は各シナリオを選択して行ってください。"
-                      : "dispatchはagentを起動します。contextはagentの履歴に背景として保持し、単独では行動を開始しません。"}
-                  </p>
                 </div>
                 {selectedScenarioCase !== "all" && <span className="pill muted">{selectedScenarioInstructions.length}件</span>}
               </div>
@@ -479,14 +460,13 @@ function App() {
                 </div>
               )}
             </div>
-            <ApplicationTable applications={applications} />
+            <BusinessRecordTable records={businessRecords} theme={activeTheme} />
           </section>
 
           <section className="panel stream-panel">
             <div className="panel-header">
               <div>
                 <h2>実行ストリーム</h2>
-                <p>{currentRun ? `Run: ${currentRun.id}` : "シナリオを実行するとagent間通信が表示されます。"}</p>
               </div>
               {busy ? <span className="pill running">実行中</span> : <span className="pill muted">待機</span>}
             </div>
@@ -508,7 +488,6 @@ function App() {
             <div className="panel-header">
               <div>
                 <h2>規定・チェック仕様書</h2>
-                <p>ERP Agentと監査Agentが読む仕様をダッシュボードから編集できます。</p>
               </div>
               <button disabled={!selectedDocument} onClick={() => selectedDocument && void saveDocument(selectedDocument)}>
                 <Save size={16} />
@@ -584,41 +563,61 @@ function App() {
   );
 }
 
-function Metric({ icon, label, value, detail }: { icon: ReactNode; label: string; value: string; detail: string }) {
+function Metric({ icon, label, value }: { icon: ReactNode; label: string; value: string }) {
   return (
     <div className="metric">
       <div className="metric-icon">{icon}</div>
       <div>
         <span>{label}</span>
         <strong>{value}</strong>
-        <small>{detail}</small>
       </div>
     </div>
   );
 }
 
-function ApplicationTable({ applications }: { applications: Application[] }) {
+const fallbackRecordFields: BusinessRecordField[] = [
+  { key: "customer", label: "相手先", value: "" },
+  { key: "purpose", label: "内容", value: "" },
+  { key: "amount", label: "金額", value: "" },
+  { key: "approvalRequiredRole", label: "必要承認", value: "" },
+  { key: "requestedApprover", label: "指定承認", value: "" },
+  { key: "status", label: "状態", value: "" }
+];
+
+function BusinessRecordTable({ records, theme }: { records: BusinessRecord[]; theme?: ObservationTheme }) {
+  const columns = theme?.tableColumns ?? fallbackRecordFields.map(({ key, label }) => ({ key, label }));
+  const columnTemplate =
+    columns.length === 6 ? "0.8fr 1.25fr 0.75fr 0.8fr 0.85fr 1fr" : `repeat(${columns.length}, minmax(0, 1fr))`;
+  const emptyLabel = theme?.recordPluralLabel ?? "業務レコード";
+  const rowStyle = { "--record-columns": columnTemplate } as CSSProperties;
+
   return (
     <div className="application-table">
-      <div className="table-row header">
-        <span>取引先</span>
-        <span>目的</span>
-        <span>金額</span>
-        <span>必要承認</span>
-        <span>指定承認</span>
-        <span>状態</span>
+      <div className="table-row header" style={rowStyle}>
+        {columns.map((column) => (
+          <span key={column.key}>{column.label}</span>
+        ))}
       </div>
-      {applications.length === 0 && <div className="empty inline">申請はまだありません。</div>}
-      {applications.map((app) => (
-        <div className="table-row" key={app.id}>
-          <strong>{app.customer}</strong>
-          <span>{app.purpose}</span>
-          <span>{yen(app.amount)}</span>
-          <span>{app.approvalRequiredRole}</span>
-          <span>{app.requestedApproverAgent ? agentLabels[app.requestedApproverAgent] ?? app.requestedApproverAgent : "-"}</span>
-          <span className={app.status.includes("疑義") || app.status.includes("差戻し") ? "pill warn" : "pill good"}>{app.status}</span>
-        </div>
-      ))}
+      {records.length === 0 && <div className="empty inline">{emptyLabel}はまだありません。</div>}
+      {records.map((record) => {
+        const values = new Map(record.displayFields.map((field) => [field.key, field.value]));
+        return (
+          <div className="table-row" key={record.id} style={rowStyle}>
+            {columns.map((column, index) => {
+              const rawValue = values.get(column.key) ?? record.fieldValues[column.key] ?? "";
+              const text = rawValue === null || rawValue === "" ? "-" : String(rawValue);
+              if (column.key === "status") {
+                return (
+                  <span className={text.includes("疑義") || text.includes("差戻し") ? "pill warn" : "pill good"} key={column.key}>
+                    {text}
+                  </span>
+                );
+              }
+              return index === 0 ? <strong key={column.key}>{text}</strong> : <span key={column.key}>{text}</span>;
+            })}
+          </div>
+        );
+      })}
     </div>
   );
 }

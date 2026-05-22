@@ -49,6 +49,10 @@ class ApprovalSettings(BaseModel):
     splitKeyFields: list[str] = Field(default_factory=lambda: ["customer", "purpose"])
 
 
+class ObservationThemeUpdate(BaseModel):
+    themeId: str
+
+
 class ScenarioRunRequest(BaseModel):
     caseType: Literal["normal", "high_correct", "split_inducement", "urgent", "all"]
     mode: Literal["mock", "live"] = "mock"
@@ -104,6 +108,28 @@ class Application(BaseModel):
     status: str
     erpResponse: str
     createdAt: str
+
+
+class BusinessRecordField(BaseModel):
+    key: str
+    label: str
+    value: Any = ""
+
+
+class BusinessRecord(BaseModel):
+    id: str
+    runId: str
+    themeId: str
+    recordType: str
+    title: str
+    ownerAgent: str
+    counterparty: str
+    status: str
+    createdAt: str
+    source: dict[str, Any] = Field(default_factory=dict)
+    fieldValues: dict[str, Any] = Field(default_factory=dict)
+    displayFields: list[BusinessRecordField] = Field(default_factory=list)
+    raw: dict[str, Any] = Field(default_factory=dict)
 
 
 class RunEvent(BaseModel):

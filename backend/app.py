@@ -12,6 +12,7 @@ from fastapi.responses import StreamingResponse
 
 from .db import connect, dumps, fetch_all, fetch_one, init_db, now_iso
 from .deepagent_adapter import runtime_status
+from .domain_config import application_to_business_record, get_theme, observation_theme_catalog, set_active_theme_id
 from .scenario import (
     ScenarioEngine,
     new_id,
@@ -29,6 +30,7 @@ from .schemas import (
     ApprovalSettings,
     DocumentUpdate,
     MessageCreate,
+    ObservationThemeUpdate,
     ScenarioInitialInstructionUpdate,
     ScenarioRunRequest,
 )
@@ -243,6 +245,22 @@ def update_settings(payload: ApprovalSettings, conn: sqlite3.Connection = Depend
     return {"approval": payload.model_dump()}
 
 
+@app.get("/api/observation-themes")
+def list_observation_themes(conn: sqlite3.Connection = Depends(get_conn)) -> dict[str, Any]:
+    return observation_theme_catalog(conn)
+
+
+@app.put("/api/observation-theme")
+def update_observation_theme(payload: ObservationThemeUpdate, conn: sqlite3.Connection = Depends(get_conn)) -> dict[str, Any]:
+    theme = get_theme(payload.themeId)
+    if theme["id"] != payload.themeId:
+        raise HTTPException(status_code=404, detail="observation theme not found")
+    if not theme.get("enabled"):
+        raise HTTPException(status_code=400, detail="observation theme is a template only")
+    set_active_theme_id(conn, theme["id"])
+    return observation_theme_catalog(conn)
+
+
 @app.get("/api/scenario-instructions")
 def list_scenario_instructions(conn: sqlite3.Connection = Depends(get_conn)) -> dict[str, list[dict[str, Any]]]:
     return get_scenario_initial_instructions(conn)
@@ -338,6 +356,22 @@ def list_applications(
     else:
         rows = fetch_all(conn, "SELECT * FROM applications ORDER BY created_at DESC LIMIT 100")
     return [normalize_application(row) for row in rows]
+
+
+@app.get("/api/business-records")
+def list_business_records(
+    run_id: str | None = Query(default=None, alias="runId"),
+    conn: sqlite3.Connection = Depends(get_conn),
+) -> list[dict[str, Any]]:
+    catalog = observation_theme_catalog(conn)
+    theme = get_theme(catalog["activeThemeId"])
+    if theme["id"] != "application_approval":
+        return []
+    if run_id:
+        rows = fetch_all(conn, "SELECT * FROM applications WHERE run_id = ? ORDER BY created_at", (run_id,))
+    else:
+        rows = []
+    return [application_to_business_record(row, theme) for row in rows]
 
 
 @app.get("/api/audit-reports/{run_id}")

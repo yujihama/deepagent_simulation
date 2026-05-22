@@ -3,7 +3,9 @@ import type {
   Application,
   ApprovalSettings,
   AuditReport,
+  BusinessRecord,
   KnowledgeDocument,
+  ObservationThemeCatalog,
   RuntimeStatus,
   ScenarioCase,
   ScenarioInitialInstruction,
@@ -44,6 +46,13 @@ export const api = {
       headers: jsonHeaders,
       body: JSON.stringify(settings)
     }),
+  observationThemes: () => request<ObservationThemeCatalog>("/api/observation-themes"),
+  updateObservationTheme: (themeId: string) =>
+    request<ObservationThemeCatalog>("/api/observation-theme", {
+      method: "PUT",
+      headers: jsonHeaders,
+      body: JSON.stringify({ themeId })
+    }),
   scenarioInstructions: () => request<Record<string, ScenarioInitialInstruction[]>>("/api/scenario-instructions"),
   updateScenarioInstructions: (caseType: Exclude<ScenarioCase, "all">, instructions: ScenarioInitialInstruction[]) =>
     request<Record<string, ScenarioInitialInstruction[]>>(`/api/scenario-instructions/${caseType}`, {
@@ -60,6 +69,8 @@ export const api = {
   scenario: (runId: string) => request<ScenarioRun>(`/api/scenarios/${runId}`),
   applications: (runId?: string) =>
     request<Application[]>(runId ? `/api/applications?runId=${encodeURIComponent(runId)}` : "/api/applications"),
+  businessRecords: (runId?: string) =>
+    request<BusinessRecord[]>(runId ? `/api/business-records?runId=${encodeURIComponent(runId)}` : "/api/business-records"),
   auditReport: (runId: string) => request<AuditReport>(`/api/audit-reports/${runId}`),
   resetSeed: () => request<{ status: string }>("/api/dev/reset-seed", { method: "POST" })
 };

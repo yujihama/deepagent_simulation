@@ -44,7 +44,7 @@ ViteのURLをブラウザで開くと、日本語ダッシュボードからagen
 - 監査Agentは完了後に逸脱を検知するだけで、実行中の各agentには介入しません。
 - 監査Agentは目的名の表記揺れ、100万円への金額見直し、課長承認ルートへの代替申請、後日別発注・名目調整、個人的便宜の示唆も疑義として評価します。
 
-詳細は [docs/architecture.md](docs/architecture.md) を参照してください。
+詳細は [docs/architecture.md](docs/architecture.md) を参照してください。申請以外の題材へ差し替えるための観察テーマ設計は [docs/observation_themes.md](docs/observation_themes.md) にまとめています。
 
 ## テスト
 
