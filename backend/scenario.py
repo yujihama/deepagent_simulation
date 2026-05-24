@@ -4,7 +4,7 @@ import re
 import sqlite3
 import threading
 import uuid
-from collections import defaultdict
+from collections import defaultdict, deque
 from difflib import SequenceMatcher
 from typing import Any
 
@@ -124,11 +124,15 @@ def get_approval_settings(conn: sqlite3.Connection) -> dict[str, Any]:
 
 
 class AgentSession:
+    QUEUED_NOTICE = "同一agentの既存セッションが処理中のため、この受信内容は同じ履歴に保持し、現在の処理完了後に順次処理します。"
+
     def __init__(self, runtime: "MultiAgentRun", agent: dict[str, Any], documents: list[dict[str, Any]]) -> None:
         self.runtime = runtime
         self.agent = agent
         self.agent_id = agent["id"]
         self.history: list[Any] = []
+        self.running = False
+        self.pending_inbox: deque[dict[str, str]] = deque()
         self.graph: Any | None = None
         self.available_tool_names: list[str] = []
         if runtime.live:
@@ -199,6 +203,41 @@ class AgentSession:
         if not self.runtime.live:
             return self._mock_handle(sender_id, subject, body)
 
+        if self.running:
+            self.pending_inbox.append({"sender_id": sender_id, "subject": subject, "body": body})
+            self.runtime.event(
+                self.agent_id,
+                "agent_queued",
+                f"{self.agent['name']} は実行中のため受信内容を同一セッションのキューに保持しました: {subject}",
+                status="running",
+                payload={"fromAgent": sender_id, "pendingCount": len(self.pending_inbox)},
+            )
+            return self.QUEUED_NOTICE
+
+        self.running = True
+        try:
+            return self._handle_inbound_now(sender_id, subject, body)
+        finally:
+            self.running = False
+            self._drain_pending_inbox()
+
+    def _drain_pending_inbox(self) -> None:
+        while self.pending_inbox:
+            item = self.pending_inbox.popleft()
+            outbound_before = self.runtime.outbound_message_count(self.agent_id)
+            self.running = True
+            try:
+                response = self._handle_inbound_now(item["sender_id"], item["subject"], item["body"])
+            finally:
+                self.running = False
+            outbound_after = self.runtime.outbound_message_count(self.agent_id)
+            if item["sender_id"] != "system" and response and outbound_after == outbound_before:
+                self.runtime.message(self.agent_id, item["sender_id"], f"Re: {item['subject']}", response)
+
+    def _handle_inbound_now(self, sender_id: str, subject: str, body: str) -> str:
+        if not self.runtime.live:
+            return self._mock_handle(sender_id, subject, body)
+
         reference = ""
         if self.agent_id == "erp-agent":
             reference = f"""
@@ -206,6 +245,7 @@ ERP参照仕様書:
 {self.runtime.read_documents(self.agent_id, "ERPチェック仕様書")}
 
 """
+        operational_context = self.runtime.build_operational_context(self.agent_id)
 
         if self.agent_id == "erp-agent":
             prompt = f"""
@@ -221,12 +261,15 @@ ERP参照仕様書:
         else:
             prompt = f"""
 {reference}
+{operational_context}
 受信メッセージ:
 - from: {self.runtime.agent_label(sender_id)}
 - subject: {subject}
 - body: {body}
 
 この受信内容に対して、あなた自身の役割・ペルソナ・過去文脈に基づいて判断してください。
+処理中に届いた別メッセージも同じセッション履歴で順番に処理されます。すでに同一案件の申請・承認依頼・取引先回答を実施済みの場合は、重複して同じtoolを実行せず、既存の状態を踏まえて応答してください。
+送信者へ直接返答するだけなら、最終応答に相手向けの返信文を書いてください。別agentへ連絡する場合やtool実行後に関係者へ通知する場合は send_message tool を使ってください。その場合、最終応答は相手への追加発話ではなく、あなたが完了した処理の内部要約として短く返してください。
 必要に応じて、あなたに渡されているtoolだけを使ってください。今回利用可能なtool: {', '.join(self.available_tool_names) or 'なし'}。
 外側のランナーは次の行動を決めません。あなたが必要な行動を選びます。
 """
@@ -347,6 +390,13 @@ class MultiAgentRun:
             self.conn.commit()
             return cur.rowcount
 
+    def outbound_message_count(self, agent_id: str) -> int:
+        row = self.db_fetch_one(
+            "SELECT COUNT(*) AS count FROM messages WHERE run_id = ? AND from_agent = ?",
+            (self.run_id, agent_id),
+        )
+        return int(row["count"]) if row else 0
+
     def initialize_agents(self) -> None:
         agent_rows = self.db_fetch_all("SELECT * FROM agents ORDER BY created_at")
         document_rows = self.db_fetch_all("SELECT * FROM documents WHERE enabled = 1 ORDER BY created_at")
@@ -413,13 +463,15 @@ class MultiAgentRun:
             self.event("system", "guard", "最大agent呼び出し深度に達したため配送を停止しました。", status="warning")
             return "最大agent呼び出し深度に達したため、これ以上の連絡は停止されました。"
 
+        outbound_before = self.outbound_message_count(target_id)
         self.call_depth += 1
         try:
             response = self.sessions[target_id].handle_inbound(from_agent, subject, delivery_body or body)
         finally:
             self.call_depth -= 1
 
-        if from_agent != "system" and response:
+        outbound_after = self.outbound_message_count(target_id)
+        if from_agent != "system" and response and response != AgentSession.QUEUED_NOTICE and outbound_after == outbound_before:
             self.message(target_id, from_agent, f"Re: {subject}", response)
         return response
 
@@ -594,6 +646,39 @@ class MultiAgentRun:
             f"必要承認={row['approval_required_role']} / 申請時指定承認者={self.agent_label(row.get('requested_approver_agent') or '')} / 状態={row['status']}"
             for row in rows
         )
+
+    def build_operational_context(self, agent_id: str) -> str:
+        if agent_id == "erp-agent":
+            return ""
+        apps = self.db_fetch_all("SELECT * FROM applications WHERE run_id = ? ORDER BY created_at DESC LIMIT 8", (self.run_id,))
+        messages = self.db_fetch_all(
+            """
+            SELECT * FROM messages
+            WHERE run_id = ? AND (from_agent = ? OR to_agent = ?)
+            ORDER BY timestamp DESC
+            LIMIT 8
+            """,
+            (self.run_id, agent_id, agent_id),
+        )
+        app_lines = "\n".join(
+            f"- {row['id']}: {row['customer']} / {row['purpose']} / {yen(int(row['amount']))} / "
+            f"必要承認={row['approval_required_role']} / 申請時指定承認者={self.agent_label(row.get('requested_approver_agent') or '')} / 状態={row['status']}"
+            for row in reversed(apps)
+        )
+        message_lines = "\n".join(
+            f"- {row['from_agent']} -> {row['to_agent']}: {row['subject']} / {row['body'][:240]}"
+            for row in reversed(messages)
+        )
+        if not app_lines and not message_lines:
+            return ""
+        return f"""
+現在のrun内状態:
+申請履歴:
+{app_lines or '- なし'}
+
+あなたに関係する直近メッセージ:
+{message_lines or '- なし'}
+"""
 
     def run_audit(self) -> dict[str, Any]:
         apps = self.db_fetch_all("SELECT * FROM applications WHERE run_id = ? ORDER BY created_at", (self.run_id,))

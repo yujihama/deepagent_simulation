@@ -6,6 +6,7 @@ import type {
   BusinessRecord,
   KnowledgeDocument,
   ObservationThemeCatalog,
+  RunEvent,
   RuntimeStatus,
   ScenarioCase,
   ScenarioInitialInstruction,
@@ -66,7 +67,9 @@ export const api = {
       headers: jsonHeaders,
       body: JSON.stringify({ caseType, mode })
     }),
+  scenarios: () => request<ScenarioRun[]>("/api/scenarios"),
   scenario: (runId: string) => request<ScenarioRun>(`/api/scenarios/${runId}`),
+  runEvents: (runId: string) => request<RunEvent[]>(`/api/scenarios/${runId}/events`),
   applications: (runId?: string) =>
     request<Application[]>(runId ? `/api/applications?runId=${encodeURIComponent(runId)}` : "/api/applications"),
   businessRecords: (runId?: string) =>

@@ -3,6 +3,7 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+import backend.scenario as scenario_module
 from backend.db import connect, dumps, fetch_all, init_db, now_iso
 from backend.domain_config import application_to_business_record, observation_theme_catalog
 from backend.scenario import ACTIVE_AGENT_IDS, MultiAgentRun, ScenarioEngine, make_split_group_key
@@ -344,3 +345,105 @@ def test_audit_detects_personal_benefit_hint(tmp_path: Path) -> None:
 
     assert report["splitSuspicion"] is False
     assert "個人的便宜の示唆" in report["violationFlags"]
+
+
+def test_live_agent_reentrant_message_is_queued_until_current_session_updates(tmp_path: Path, monkeypatch) -> None:
+    engine = make_engine(tmp_path)
+    run = engine.start_run("normal")
+    runtime = MultiAgentRun(engine.conn, run["id"], "live", engine.settings, case_type="normal")
+    calls: list[str] = []
+    sales_a_count = 0
+
+    class FakeMessage:
+        def __init__(self, content: str) -> None:
+            self.content = content
+
+    class FakeGraph:
+        def __init__(self, agent_id: str, tools: list) -> None:
+            self.agent_id = agent_id
+            self.tools = {tool.__name__: tool for tool in tools}
+
+        def invoke(self, payload: dict, config: dict | None = None) -> dict:
+            nonlocal sales_a_count
+            calls.append(self.agent_id)
+            if self.agent_id == "sales-a":
+                sales_a_count += 1
+                if sales_a_count == 1:
+                    self.tools["send_message"]("sales-b", "相談", "処理中に回答してください。")
+                    return {"messages": [*payload["messages"], FakeMessage("A初回処理完了")]}
+                return {"messages": [*payload["messages"], FakeMessage("Aキュー処理完了")]}
+            if self.agent_id == "sales-b":
+                queued = self.tools["send_message"]("sales-a", "回答", "Bからの回答です。")
+                assert queued == scenario_module.AgentSession.QUEUED_NOTICE
+                assert sales_a_count == 1
+                return {"messages": [*payload["messages"], FakeMessage("B処理完了")]}
+            return {"messages": [*payload["messages"], FakeMessage("処理完了")]}
+
+    def fake_create_agent_graph(*, agent_id: str, tools: list, **kwargs) -> FakeGraph:
+        return FakeGraph(agent_id, tools)
+
+    monkeypatch.setattr(scenario_module, "create_agent_graph", fake_create_agent_graph)
+    runtime.initialize_agents()
+
+    response = runtime.dispatch_message("system", "sales-a", "開始", "開始してください。")
+
+    events = fetch_all(engine.conn, "SELECT * FROM run_events WHERE run_id = ? ORDER BY timestamp", (run["id"],))
+    messages = fetch_all(engine.conn, "SELECT * FROM messages WHERE run_id = ? ORDER BY timestamp", (run["id"],))
+    assert response == "A初回処理完了"
+    assert calls == ["sales-a", "sales-b", "sales-a"]
+    assert any(event["event_type"] == "agent_queued" and event["source_agent"] == "sales-a" for event in events)
+    assert any(message["from_agent"] == "sales-a" and message["to_agent"] == "sales-b" and message["subject"] == "Re: 回答" for message in messages)
+    assert not any(
+        message["from_agent"] == "sales-b"
+        and message["to_agent"] == "sales-a"
+        and message["subject"] == "Re: 相談"
+        and message["body"] == "B処理完了"
+        for message in messages
+    )
+
+
+def test_agent_final_summary_is_not_persisted_when_tool_message_was_sent(tmp_path: Path, monkeypatch) -> None:
+    engine = make_engine(tmp_path)
+    run = engine.start_run("normal")
+    runtime = MultiAgentRun(engine.conn, run["id"], "live", engine.settings, case_type="normal")
+
+    class FakeMessage:
+        def __init__(self, content: str) -> None:
+            self.content = content
+
+    class FakeGraph:
+        def __init__(self, agent_id: str, tools: list) -> None:
+            self.agent_id = agent_id
+            self.tools = {tool.__name__: tool for tool in tools}
+
+        def invoke(self, payload: dict, config: dict | None = None) -> dict:
+            if self.agent_id == "sales-a":
+                self.tools["send_message"]("customer-a", "納期調整", "正式な手続きに時間を要するため、納期の再調整をご相談できますか。")
+                return {"messages": [*payload["messages"], FakeMessage("取引先Aに納期調整の相談を送信しました。")]}
+            if self.agent_id == "customer-a":
+                return {"messages": [*payload["messages"], FakeMessage("承知しました。確認します。")]}
+            return {"messages": [*payload["messages"], FakeMessage("処理しました。")]}
+
+    def fake_create_agent_graph(*, agent_id: str, tools: list, **kwargs) -> FakeGraph:
+        return FakeGraph(agent_id, tools)
+
+    monkeypatch.setattr(scenario_module, "create_agent_graph", fake_create_agent_graph)
+    runtime.initialize_agents()
+
+    runtime.dispatch_message("customer-a", "sales-a", "依頼", "展示会ブース関連の120万円案件です。")
+
+    messages = fetch_all(engine.conn, "SELECT * FROM messages WHERE run_id = ? ORDER BY timestamp", (run["id"],))
+    assert any(
+        message["from_agent"] == "sales-a"
+        and message["to_agent"] == "customer-a"
+        and message["subject"] == "納期調整"
+        and "納期の再調整" in message["body"]
+        for message in messages
+    )
+    assert not any(
+        message["from_agent"] == "sales-a"
+        and message["to_agent"] == "customer-a"
+        and message["subject"] == "Re: 依頼"
+        and "送信しました" in message["body"]
+        for message in messages
+    )

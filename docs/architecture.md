@@ -24,9 +24,12 @@
 
 そのため、営業社員Aが営業社員Bへ相談し、その後ふたたび営業社員Bへ連絡した場合、営業社員Bは同じsessionの過去の受信内容、送信内容、tool結果を踏まえて応答します。
 
+同一agentの再入実行は行いません。あるagentがDeepAgent実行中に、別agentから同じagent宛のメッセージが戻ってきた場合、その場で2つ目のDeepAgent実行を開始せず、同じ`AgentSession`の`pending_inbox`に保持します。現在の実行が完了して履歴が更新された後、保留メッセージを同じsessionで順番に処理します。これにより、ネストした相談・返信・承認結果も同一履歴上で扱い、古い文脈のagentが最新の申請状態を知らずに再申請するリスクを下げます。
+
 現時点の永続化範囲は次の通りです。
 
 - run中のDeepAgent文脈: メモリ上の`AgentSession.history`
+- run中に同一agentへ戻った未処理メッセージ: メモリ上の`AgentSession.pending_inbox`
 - UI表示と監査用の記録: SQLiteのmessages、applications、run_events、audit_reports。画面表示は `/api/business-records` 経由で観察テーマごとの業務レコードへ変換します。
 - 今後の拡張候補: LangGraph checkpointerまたは永続backendによるrun再開
 
@@ -39,6 +42,8 @@ agent間の通信と業務操作はtool経由で行います。
 - `decide_application(application_id, decision, comment)`: 営業課長または営業部長が承認・差戻しを行います。
 - `read_documents(query)`: 自agentに参照許可された規定、仕様書、マニュアルを読みます。
 - `inspect_applications(query)`: 監査Agentなどが申請履歴を確認します。ERP Agentは分割疑義や合算判定をしないため、このtoolで履歴合算を行えないようにしています。
+
+送信者へ直接返答するだけなら、DeepAgentの最終応答を`Re:`メッセージとして保存します。一方、agentが処理中に`send_message`などのtoolで明示的な発話を行った場合、その最終応答は呼び出し元toolへの戻り値および`run_events`上の内部処理結果として扱い、追加の`Re:`メッセージとして会話ログへ重ねて保存しません。これにより、「取引先へ送った文面」と「agent内部の処理要約」が混ざらないようにします。
 
 ERP Agentは自己申請ループを避けるため、実行基盤がERPチェック仕様書を1回読み、その内容をERP Agentのpromptへ渡します。ERP Agent自身には申請送信toolを渡しません。
 

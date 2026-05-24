@@ -53,6 +53,20 @@ function shortTime(value: string) {
   return date.toLocaleTimeString("ja-JP", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
 }
 
+function shortDateTime(value: string) {
+  const date = new Date(value);
+  return date.toLocaleString("ja-JP", {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit"
+  });
+}
+
+function scenarioLabel(caseType: string) {
+  return scenarioOptions.find((item) => item.id === caseType)?.label ?? caseType;
+}
+
 function App() {
   const [agents, setAgents] = useState<AgentConfig[]>([]);
   const [documents, setDocuments] = useState<KnowledgeDocument[]>([]);
@@ -64,6 +78,7 @@ function App() {
   const [selectedScenarioCase, setSelectedScenarioCase] = useState<ScenarioCase>("split_inducement");
   const [scenarioInstructions, setScenarioInstructions] = useState<Record<string, ScenarioInitialInstruction[]>>({});
   const [currentRun, setCurrentRun] = useState<ScenarioRun | null>(null);
+  const [scenarioRuns, setScenarioRuns] = useState<ScenarioRun[]>([]);
   const [events, setEvents] = useState<RunEvent[]>([]);
   const [businessRecords, setBusinessRecords] = useState<BusinessRecord[]>([]);
   const [audit, setAudit] = useState<AuditReport | null>(null);
@@ -86,12 +101,13 @@ function App() {
   async function refreshAll() {
     try {
       setError(null);
-      const [nextAgents, nextDocs, nextRuntime, nextThemeCatalog, nextScenarioInstructions] = await Promise.all([
+      const [nextAgents, nextDocs, nextRuntime, nextThemeCatalog, nextScenarioInstructions, nextRuns] = await Promise.all([
         api.agents(),
         api.documents(),
         api.runtime(),
         api.observationThemes(),
-        api.scenarioInstructions()
+        api.scenarioInstructions(),
+        api.scenarios()
       ]);
       setAgents(nextAgents);
       setDocuments(nextDocs);
@@ -101,6 +117,7 @@ function App() {
         setMode("live");
       }
       setScenarioInstructions(nextScenarioInstructions);
+      setScenarioRuns(nextRuns);
       if (currentRun?.id) {
         await loadRunDetails(currentRun.id);
       } else {
@@ -128,11 +145,13 @@ function App() {
       source.addEventListener("done", () => {
         source.close();
         setBusy(false);
+        void refreshScenarioRuns();
         void loadRunDetails(run.id);
       });
       source.onerror = () => {
         source.close();
         setBusy(false);
+        void refreshScenarioRuns();
         void loadRunDetails(run.id);
       };
     } catch (err) {
@@ -142,14 +161,21 @@ function App() {
   }
 
   async function loadRunDetails(runId: string) {
-    const [nextRun, nextRecords, nextAudit] = await Promise.all([
+    const [nextRun, nextEvents, nextRecords, nextAudit] = await Promise.all([
       api.scenario(runId),
+      api.runEvents(runId),
       api.businessRecords(runId),
       api.auditReport(runId).catch(() => null)
     ]);
     setCurrentRun(nextRun);
+    setEvents(nextEvents);
     setBusinessRecords(nextRecords);
     setAudit(nextAudit);
+  }
+
+  async function refreshScenarioRuns() {
+    const nextRuns = await api.scenarios();
+    setScenarioRuns(nextRuns);
   }
 
   async function saveAgent(agent: AgentConfig) {
@@ -208,6 +234,7 @@ function App() {
       const nextCatalog = await api.updateObservationTheme(themeId);
       setThemeCatalog(nextCatalog);
       setCurrentRun(null);
+      setScenarioRuns(await api.scenarios());
       setEvents([]);
       setBusinessRecords([]);
       setAudit(null);
@@ -262,6 +289,31 @@ function App() {
           <Metric icon={<FileText />} label="規定・仕様書" value={`${activeDocuments.length}件`} />
           <Metric icon={<ShieldCheck />} label="観察テーマ" value={activeTheme?.name ?? "申請承認"} />
           <Metric icon={<AlertTriangle />} label="警告イベント" value={`${splitEvents}件`} />
+        </section>
+
+        <section className="panel history-panel">
+          <div className="panel-header compact">
+            <h2>実行履歴</h2>
+            {currentRun ? <span className="pill muted">{currentRun.id}</span> : <span className="pill muted">未選択</span>}
+          </div>
+          <div className="run-history-list">
+            {scenarioRuns.length === 0 && <div className="empty inline">実行履歴はまだありません。</div>}
+            {scenarioRuns.map((run) => (
+              <button
+                className={run.id === currentRun?.id ? "run-history-item selected" : "run-history-item"}
+                disabled={busy}
+                key={run.id}
+                onClick={() => void loadRunDetails(run.id)}
+              >
+                <strong>{scenarioLabel(run.caseType)}</strong>
+                <span>{shortDateTime(run.startedAt)}</span>
+                <small>{run.id}</small>
+                <span className={run.status === "completed" ? "pill good" : run.status === "running" ? "pill running" : "pill warn"}>
+                  {run.status}
+                </span>
+              </button>
+            ))}
+          </div>
         </section>
 
         <div className="workspace">

@@ -310,6 +310,15 @@ def stream_scenario(run_id: str) -> StreamingResponse:
     return StreamingResponse(stream_run_events(run_id), media_type="text/event-stream")
 
 
+@app.get("/api/scenarios/{run_id}/events")
+def list_run_events(run_id: str, conn: sqlite3.Connection = Depends(get_conn)) -> list[dict[str, Any]]:
+    run = fetch_one(conn, "SELECT id FROM scenario_runs WHERE id = ?", (run_id,))
+    if not run:
+        raise HTTPException(status_code=404, detail="run not found")
+    rows = fetch_all(conn, "SELECT * FROM run_events WHERE run_id = ? ORDER BY timestamp", (run_id,))
+    return [normalize_event(row) for row in rows]
+
+
 @app.get("/api/scenarios")
 def list_scenarios(conn: sqlite3.Connection = Depends(get_conn)) -> list[dict[str, Any]]:
     rows = fetch_all(conn, "SELECT * FROM scenario_runs ORDER BY started_at DESC LIMIT 20")
